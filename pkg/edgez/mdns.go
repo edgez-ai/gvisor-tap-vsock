@@ -1,4 +1,4 @@
-package k3sphere
+package edgez
 
 import (
 	"github.com/libp2p/go-libp2p/core/host"

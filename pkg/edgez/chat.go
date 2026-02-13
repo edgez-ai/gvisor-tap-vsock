@@ -1,4 +1,4 @@
-package k3sphere
+package edgez
 
 import (
 	"bytes"
@@ -54,10 +54,10 @@ spec:
 `
 
 type Payload struct {
-	IP      string `json:"ip"`
-	PublicKey  string `json:"publicKey"`
-	Host    string `json:"host"`
-	OIDC    bool   `json:"oidc"`
+	IP        string `json:"ip"`
+	PublicKey string `json:"publicKey"`
+	Host      string `json:"host"`
+	OIDC      bool   `json:"oidc"`
 }
 
 // A structure that represents a PubSub Chat Room
@@ -200,15 +200,15 @@ func JoinChatRoom(p2phost *P2P, password string, config Config, mode string) (*C
 			if time.Since(formData.Timestamp) < time.Minute*10 {
 				if formData.Target == p2phost.Host.ID().String() {
 					stream.Write([]byte("execute command \n"))
-					executeCommand(stream, mode, formData,config);
-				}else {
+					executeCommand(stream, mode, formData, config)
+				} else {
 					stream.Write([]byte("invalid target \n"))
 				}
-				
-			}else {
+
+			} else {
 				stream.Write([]byte("the command expired \n"))
 			}
-			
+
 		}()
 	})
 
@@ -220,19 +220,19 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 	switch formData.Type {
 	case "attachSSHKey":
 		if mode == "podman" {
-			 // Construct the command to attach the SSH key
-			 cmd := exec.Command("podman", "machine", "ssh", fmt.Sprintf("sudo grep -qxF '%s' /home/%s/.ssh/authorized_keys || echo '%s' | sudo tee -a /home/%s/.ssh/authorized_keys", formData.Arg2, formData.Arg1, formData.Arg2, formData.Arg1))
-			
-			 // Run the command and pipe output to the stream
-			 output, err := cmd.CombinedOutput()
-			 if err != nil {
-				 stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
-				 return
-			 }
-			 stream.Write([]byte(fmt.Sprintf("attachSSHKey output: %s\n", strings.TrimSpace(string(output)))))
-		}else {
+			// Construct the command to attach the SSH key
+			cmd := exec.Command("podman", "machine", "ssh", fmt.Sprintf("sudo grep -qxF '%s' /home/%s/.ssh/authorized_keys || echo '%s' | sudo tee -a /home/%s/.ssh/authorized_keys", formData.Arg2, formData.Arg1, formData.Arg2, formData.Arg1))
+
+			// Run the command and pipe output to the stream
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
+				return
+			}
+			stream.Write([]byte(fmt.Sprintf("attachSSHKey output: %s\n", strings.TrimSpace(string(output)))))
+		} else {
 			cmd := exec.Command("sh", "-c", fmt.Sprintf("sudo grep -qxF '%s' /home/%s/.ssh/authorized_keys || echo '%s' | sudo tee -a /home/%s/.ssh/authorized_keys", formData.Arg2, formData.Arg1, formData.Arg2, formData.Arg1))
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -244,7 +244,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 	case "createK3s":
 		if mode == "podman" {
 			oidcArgs := fmt.Sprintf(" --node-label=cluster-id=%s --kube-apiserver-arg=oidc-client-id=%s", config.ClientId, config.ClientId)
-			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-issuer-url=%s", "https://auth.k3sphere.com/realms/k3sphere")
+			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-issuer-url=%s", "https://auth.edgez.com/realms/edgez")
 			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-username-claim=%s", "email")
 			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-groups-claim=%s", "groups")
 
@@ -256,19 +256,18 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 			} else {
 				oidcArgs += fmt.Sprintf(" --flannel-iface=%s", "enp0s1")
 			}
-	
 
-			tlsSanArgs := " --tls-san=" + fmt.Sprintf("api.%s.k3sphere.io",config.ClusterName) + oidcArgs
-		
+			tlsSanArgs := " --tls-san=" + fmt.Sprintf("api.%s.edgez.io", config.ClusterName) + oidcArgs
+
 			traefikConfig := base64.StdEncoding.EncodeToString([]byte(traefik))
 			traefikConfigCmd := fmt.Sprintf("sudo mkdir -p /var/lib/rancher/k3s/server/manifests/ && echo %s | base64 -d | sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml > /dev/null", traefikConfig)
-			installCommand := fmt.Sprintf("%s && curl -sfL https://get.k3sphere.io | INSTALL_K3S_EXEC=\"%s\" sh -", traefikConfigCmd, tlsSanArgs)
+			installCommand := fmt.Sprintf("%s && curl -sfL https://get.edgez.io | INSTALL_K3S_EXEC=\"%s\" sh -", traefikConfigCmd, tlsSanArgs)
 			// Output the installation command
 			stream.Write([]byte("Run the following command to install K3s with all local IPs:"))
 			stream.Write([]byte(installCommand))
 
 			cmd := exec.Command("podman", "machine", "ssh", installCommand)
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -276,28 +275,27 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				return
 			}
 			stream.Write([]byte(fmt.Sprintf("successfully setup the cluster: %s\n", strings.TrimSpace(string(output)))))
-		}else {
+		} else {
 			oidcArgs := fmt.Sprintf(" --node-label=cluster-id=%s --kube-apiserver-arg=oidc-client-id=%s", config.ClientId, config.ClientId)
-			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-issuer-url=%s", "https://auth.k3sphere.com/realms/k3sphere")
+			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-issuer-url=%s", "https://auth.edgez.com/realms/edgez")
 			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-username-claim=%s", "email")
 			oidcArgs += fmt.Sprintf(" --kube-apiserver-arg=oidc-groups-claim=%s", "groups")
 			oidcArgs += fmt.Sprintf(" --node-ip=%s", config.IP)
 			oidcArgs += fmt.Sprintf(" --advertise-address=%s", config.IP)
 			oidcArgs += " --flannel-backend=host-gw "
 			oidcArgs += fmt.Sprintf(" --flannel-iface=%s", config.Interface)
-			
 
-			tlsSanArgs := " --tls-san=" + fmt.Sprintf("api.%s.k3sphere.io",config.ClusterName) + oidcArgs
-		
+			tlsSanArgs := " --tls-san=" + fmt.Sprintf("api.%s.edgez.io", config.ClusterName) + oidcArgs
+
 			traefikConfig := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(traefik, formData.Arg1)))
 			traefikConfigCmd := fmt.Sprintf("sudo mkdir -p /var/lib/rancher/k3s/server/manifests/ && echo %s | base64 -d | sudo tee /var/lib/rancher/k3s/server/manifests/traefik-config.yaml > /dev/null", traefikConfig)
-			installCommand := fmt.Sprintf("%s && curl -sfL https://get.k3sphere.io | INSTALL_K3S_EXEC=\"%s\" sh -", traefikConfigCmd, tlsSanArgs)
+			installCommand := fmt.Sprintf("%s && curl -sfL https://get.edgez.io | INSTALL_K3S_EXEC=\"%s\" sh -", traefikConfigCmd, tlsSanArgs)
 			// Output the installation command
 			stream.Write([]byte("Run the following command to install K3s with all local IPs:"))
 			stream.Write([]byte(installCommand))
 
 			cmd := exec.Command("sh", "-c", installCommand)
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -308,21 +306,21 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 		}
 	case "registerK3s":
 		if mode == "podman" {
-			 // Construct the command to attach the SSH key
-			 cmd := exec.Command("podman", "machine", "ssh", "sudo base64 -w 0 /var/lib/rancher/k3s/server/tls/server-ca.crt")
-			
-			 // Run the command and pipe output to the stream
-			 output, err := cmd.CombinedOutput()
-			 if err != nil {
-				 stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
-				 return
-			 }
+			// Construct the command to attach the SSH key
+			cmd := exec.Command("podman", "machine", "ssh", "sudo base64 -w 0 /var/lib/rancher/k3s/server/tls/server-ca.crt")
+
+			// Run the command and pipe output to the stream
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
+				return
+			}
 
 			// Data to be sent in JSON format
 			data := Payload{
-				IP: config.IP,
-				Host: stream.Conn().LocalPeer().String(),
-				PublicKey:    string(output),
+				IP:        config.IP,
+				Host:      stream.Conn().LocalPeer().String(),
+				PublicKey: string(output),
 			}
 
 			// Marshal the data to JSON
@@ -332,7 +330,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				os.Exit(1)
 			}
 
-			url := "https://k3sphere.com/api/cluster/register"
+			url := "https://edgez.com/api/cluster/register"
 			// Create a new HTTP POST request
 			req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 			if err != nil {
@@ -340,7 +338,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				os.Exit(1)
 			}
 
-			base64Data := fmt.Sprintf("%s:%s",config.ClientId, config.VLAN)
+			base64Data := fmt.Sprintf("%s:%s", config.ClientId, config.VLAN)
 			token := base64.StdEncoding.EncodeToString([]byte(base64Data))
 			// Set headers
 			req.Header.Set("Content-Type", "application/json")
@@ -356,9 +354,9 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 			// Print the response
 			stream.Write([]byte(fmt.Sprintf("Response Status: %s", resp.Status)))
 
-		}else {
+		} else {
 			cmd := exec.Command("sh", "-c", "sudo base64 -w 0 /var/lib/rancher/k3s/server/tls/server-ca.crt")
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -366,12 +364,11 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				return
 			}
 
-
 			// Data to be sent in JSON format
 			data := Payload{
-				IP: config.IP,
-				Host: stream.Conn().LocalPeer().String(),
-				PublicKey:    string(output),
+				IP:        config.IP,
+				Host:      stream.Conn().LocalPeer().String(),
+				PublicKey: string(output),
 			}
 
 			// Marshal the data to JSON
@@ -381,7 +378,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				os.Exit(1)
 			}
 
-			url := "https://k3sphere.com/api/cluster/register"
+			url := "https://edgez.com/api/cluster/register"
 			// Create a new HTTP POST request
 			req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 			if err != nil {
@@ -389,7 +386,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				os.Exit(1)
 			}
 
-			base64Data := fmt.Sprintf("%s:%s",config.ClientId, config.VLAN)
+			base64Data := fmt.Sprintf("%s:%s", config.ClientId, config.VLAN)
 			token := base64.StdEncoding.EncodeToString([]byte(base64Data))
 			// Set headers
 			req.Header.Set("Content-Type", "application/json")
@@ -408,19 +405,19 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 		}
 	case "getJoinKey":
 		if mode == "podman" {
-			 // Construct the command to attach the SSH key
-			 cmd := exec.Command("podman", "machine", "ssh", "sudo cat /var/lib/rancher/k3s/server/node-token")
-			
-			 // Run the command and pipe output to the stream
-			 output, err := cmd.CombinedOutput()
-			 if err != nil {
-				 stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
-				 return
-			 }
-			 stream.Write([]byte(fmt.Sprintf("join key: %s\n", strings.TrimSpace(string(output)))))
-		}else {
+			// Construct the command to attach the SSH key
+			cmd := exec.Command("podman", "machine", "ssh", "sudo cat /var/lib/rancher/k3s/server/node-token")
+
+			// Run the command and pipe output to the stream
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				stream.Write([]byte(fmt.Sprintf("failed to attach SSH key: %v\n", err)))
+				return
+			}
+			stream.Write([]byte(fmt.Sprintf("join key: %s\n", strings.TrimSpace(string(output)))))
+		} else {
 			cmd := exec.Command("sh", "-c", "sudo cat /var/lib/rancher/k3s/server/node-token")
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -432,9 +429,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 	case "joinK3s":
 		if mode == "podman" {
 
-			command := fmt.Sprintf(`curl -sfL https://get.k3sphere.io | K3S_URL="https://%s:6443" K3S_TOKEN="%s" INSTALL_K3S_EXEC="--node-ip=%s --flannel-iface=%s" sh -`,formData.Arg1, formData.Arg2,config.IP,config.Interface)
-
-
+			command := fmt.Sprintf(`curl -sfL https://get.edgez.io | K3S_URL="https://%s:6443" K3S_TOKEN="%s" INSTALL_K3S_EXEC="--node-ip=%s --flannel-iface=%s" sh -`, formData.Arg1, formData.Arg2, config.IP, config.Interface)
 
 			fmt.Println("command line: " + command)
 			// Output the installation command
@@ -442,7 +437,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 			stream.Write([]byte(command))
 
 			cmd := exec.Command("podman", "machine", "ssh", command)
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -450,11 +445,9 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 				return
 			}
 			stream.Write([]byte(fmt.Sprintf("join k3s cluster: %s\n", strings.TrimSpace(string(output)))))
-		}else {
+		} else {
 
-			command := fmt.Sprintf(`curl -sfL https://get.k3sphere.io | K3S_URL="https://%s:6443" K3S_TOKEN="%s" INSTALL_K3S_EXEC="--node-ip=%s --flannel-iface=%s" sh -`,formData.Arg1, formData.Arg2,config.IP,config.Interface)
-
-
+			command := fmt.Sprintf(`curl -sfL https://get.edgez.io | K3S_URL="https://%s:6443" K3S_TOKEN="%s" INSTALL_K3S_EXEC="--node-ip=%s --flannel-iface=%s" sh -`, formData.Arg1, formData.Arg2, config.IP, config.Interface)
 
 			fmt.Println("command line: " + command)
 			// Output the installation command
@@ -462,7 +455,7 @@ func executeCommand(stream network.Stream, mode string, formData FormSchema, con
 			stream.Write([]byte(command))
 
 			cmd := exec.Command("sh", "-c", command)
-			
+
 			// Run the command and pipe output to the stream
 			output, err := cmd.CombinedOutput()
 			if err != nil {

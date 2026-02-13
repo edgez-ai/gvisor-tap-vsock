@@ -1,4 +1,4 @@
-package k3sphere
+package edgez
 
 import (
 	"context"
@@ -38,7 +38,7 @@ import (
 
 const service = "bafybeicbk7ir6zhcbxbx6ts6uh43culksw2q4jbhmtscgpplvroaa7ihdy"
 const (
-	rendezvousString = "k3sphere"
+	rendezvousString = "edgez"
 )
 const LIBP2P_LOGGING = "/gvisor/libp2p-logging/1.0.0"
 const LIBP2P_CONFIG = "/gvisor/libp2p-config/1.0.0"

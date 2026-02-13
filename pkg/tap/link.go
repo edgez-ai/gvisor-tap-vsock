@@ -3,7 +3,7 @@ package tap
 import (
 	"net"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
+	"github.com/containers/gvisor-tap-vsock/pkg/edgez"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	log "github.com/sirupsen/logrus"
@@ -21,10 +21,10 @@ type LinkEndpoint struct {
 
 	dispatcher    stack.NetworkDispatcher
 	networkSwitch NetworkSwitch
-	p2pHost       *k3sphere.P2P
+	p2pHost       *edgez.P2P
 }
 
-func NewLinkEndpoint(debug bool, mtu uint32, macAddress string, ip string, virtualIPs []string, p2pHost *k3sphere.P2P) (*LinkEndpoint, error) {
+func NewLinkEndpoint(debug bool, mtu uint32, macAddress string, ip string, virtualIPs []string, p2pHost *edgez.P2P) (*LinkEndpoint, error) {
 	linkAddr, err := net.ParseMAC(macAddress)
 	if err != nil {
 		return nil, err

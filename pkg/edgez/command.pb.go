@@ -4,7 +4,7 @@
 // 	protoc        v3.20.3
 // source: command.proto
 
-package k3sphere
+package edgez
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"

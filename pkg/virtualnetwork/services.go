@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
+	"github.com/containers/gvisor-tap-vsock/pkg/edgez"
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dns"
 	"github.com/containers/gvisor-tap-vsock/pkg/services/forwarder"
@@ -25,7 +25,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func addServices(ctx context.Context, configuration *types.Configuration, s *stack.Stack, ipPool *tap.IPPool, p2pHost *k3sphere.P2P, config1 *k3sphere.Config) (http.Handler, error) {
+func addServices(ctx context.Context, configuration *types.Configuration, s *stack.Stack, ipPool *tap.IPPool, p2pHost *edgez.P2P, config1 *edgez.Config) (http.Handler, error) {
 	var natLock sync.Mutex
 	translation := parseNATTable(configuration)
 
@@ -67,7 +67,7 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 			// If no IP is provided, remote the route
 			p2pHost.RemoveCidrMap(cidr)
 			log.Infof("remove route for cidr: %s", cidr)
-		}else if ip == config1.IP {
+		} else if ip == config1.IP {
 			log.Infof("add route for local ip: %s", ip)
 			// parse cidr from 192.168.127.0/24 to with address and mask
 			ip4, subnet, err := net.ParseCIDR(cidr)
@@ -77,7 +77,7 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 			}
 			address := tcpip.AddrFrom4Slice(ip4.To4())
 			mask := tcpip.AddressMask(tcpip.MaskFromBytes(subnet.Mask))
-			subnetResult, err := tcpip.NewSubnet(address,mask)
+			subnetResult, err := tcpip.NewSubnet(address, mask)
 			// get gateway from cidr
 			// Increment the last byte of the subnet's IP to get the gateway IP
 			gatewayIP := subnet.IP.To4()
@@ -93,9 +93,9 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 			s.ReplaceRoute(tcpip.Route{
 				Destination: subnetResult,
 				Gateway:     gateway,
-				NIC: 	  1,
+				NIC:         1,
 			})
-		}else {
+		} else {
 			// Call AddCidrMap or other logic with the parameters
 			p2pHost.AddCidrMap(cidr, ip)
 			if config1.IsVPN {
@@ -107,7 +107,7 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 				}
 				address := tcpip.AddrFrom4Slice(ip4.To4())
 				mask := tcpip.AddressMask(tcpip.MaskFromBytes(subnet.Mask))
-				subnetResult, err := tcpip.NewSubnet(address,mask)
+				subnetResult, err := tcpip.NewSubnet(address, mask)
 				// get gateway from cidr
 				// Increment the last byte of the subnet's IP to get the gateway IP
 				gatewayIP := subnet.IP.To4()
@@ -121,8 +121,8 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 				log.Infof("subnet: %s", subnetResult)
 				// Add route to the stack
 				newRoute := netlink.Route{
-					Dst:       &net.IPNet{IP: ip4, Mask: subnet.Mask},
-					Gw:        net.ParseIP(config1.GatewayIP),
+					Dst: &net.IPNet{IP: ip4, Mask: subnet.Mask},
+					Gw:  net.ParseIP(config1.GatewayIP),
 				}
 				if err := netlink.RouteAdd(&newRoute); err != nil {
 					http.Error(w, fmt.Sprintf("failed to add route: %v", err), http.StatusInternalServerError)

@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
+	"github.com/containers/gvisor-tap-vsock/pkg/edgez"
 	"github.com/containers/gvisor-tap-vsock/pkg/net/stdio"
 	"github.com/containers/gvisor-tap-vsock/pkg/sshclient"
 	"github.com/containers/gvisor-tap-vsock/pkg/transport"
@@ -119,7 +119,7 @@ func main() {
 	const keyFileName = "gvproxy.conf"
 	keyFilePath := fmt.Sprintf("%s/%s", userHomeDir, keyFileName)
 
-	config1, err := k3sphere.NewConfig(keyFilePath, version.String())
+	config1, err := edgez.NewConfig(keyFilePath, version.String())
 	if err != nil {
 		log.Fatalf("Failed to load config file %v", err)
 	} else {
@@ -147,7 +147,7 @@ func main() {
 	defer os.Exit(exitCode)
 
 	// Create a new P2PHost
-	p2phost := k3sphere.NewP2P(key, relay, swarmKey, config1.Public)
+	p2phost := edgez.NewP2P(key, relay, swarmKey, config1.Public)
 	log.Infof("Completed P2P Setup %s", relay)
 
 	groupErrs, ctx := errgroup.WithContext(ctx)
@@ -320,7 +320,7 @@ func main() {
 	})
 
 	groupErrs.Go(func() error {
-		return k3sphere.ConnectLibp2p(ctx, p2phost, *config1, password, "podman")
+		return edgez.ConnectLibp2p(ctx, p2phost, *config1, password, "podman")
 	})
 
 	// Wait for all of the go funcs to finish up
@@ -361,7 +361,7 @@ func InDebugMode() bool {
 	return log.GetLevel() == log.DebugLevel
 }
 
-func run(ctx context.Context, g *errgroup.Group, configuration *types.Configuration, endpoints []string, servicesEndpoint string, p2phost *k3sphere.P2P, config1 *k3sphere.Config) error {
+func run(ctx context.Context, g *errgroup.Group, configuration *types.Configuration, endpoints []string, servicesEndpoint string, p2phost *edgez.P2P, config1 *edgez.Config) error {
 	vn, err := virtualnetwork.New(ctx, configuration, p2phost, config1)
 	if err != nil {
 		return err

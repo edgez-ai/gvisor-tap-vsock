@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
+	"github.com/containers/gvisor-tap-vsock/pkg/edgez"
 	"github.com/containers/gvisor-tap-vsock/pkg/notification"
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -35,7 +35,7 @@ func (n *VirtualNetwork) SetNotificationSender(notificationSender *notification.
 	n.networkSwitch.SetNotificationSender(notificationSender)
 }
 
-func New(ctx context.Context, configuration *types.Configuration, p2pHost *k3sphere.P2P, config1 *k3sphere.Config) (*VirtualNetwork, error) {
+func New(ctx context.Context, configuration *types.Configuration, p2pHost *edgez.P2P, config1 *edgez.Config) (*VirtualNetwork, error) {
 	_, subnet, err := net.ParseCIDR(configuration.Subnet)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse subnet cidr: %w", err)

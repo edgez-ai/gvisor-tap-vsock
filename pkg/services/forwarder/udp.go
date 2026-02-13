@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
+	"github.com/containers/gvisor-tap-vsock/pkg/edgez"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	log "github.com/sirupsen/logrus"
@@ -24,9 +24,9 @@ import (
 
 const LIBP2P_TAP_UDP = "/gvisor/libp2p-tap-udp/1.0.0"
 
-func UDP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, p2pHost *k3sphere.P2P) *udp.Forwarder {
-    p2pHost.Host.SetStreamHandler(LIBP2P_TAP_UDP, func(stream network.Stream) {
-    	go func () {
+func UDP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, p2pHost *edgez.P2P) *udp.Forwarder {
+	p2pHost.Host.SetStreamHandler(LIBP2P_TAP_UDP, func(stream network.Stream) {
+		go func() {
 			buf := make([]byte, 4)
 
 			// Read 4 bytes from the stream
@@ -81,19 +81,18 @@ func UDP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 			}
 			log.Infof("Received number: %s %d", srcAddress, num)
 			log.Infof("Received number: %s %d", address, num)
-			
+
 			type UDPConnection interface {
 				SetReadDeadline(t time.Time) error
 				Write(b []byte) (int, error)
 				Read(b []byte) (int, error)
 				Close() error
 			}
-			
+
 			var proxyConn UDPConnection
 
-
 			proxyConn, err = gonet.DialUDP(s, nil, &address, ipv4.ProtocolNumber)
-		
+
 			if err != nil {
 				fmt.Println("Error sending message:", err)
 				return
@@ -142,114 +141,114 @@ func UDP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 					i += written
 				}
 			}
-			
+
 		}()
-    	
-    })
-    return udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
-        localAddress := r.ID().LocalAddress
-        p2pAddress := ""
+
+	})
+	return udp.NewForwarder(s, func(r *udp.ForwarderRequest) {
+		localAddress := r.ID().LocalAddress
+		p2pAddress := ""
 
 		if linkLocal().Contains(localAddress) || localAddress == header.IPv4Broadcast {
 			return
 		}
 		log.Infof("handle udp: LocalAddress=%s\n", localAddress)
 		natLock.Lock()
-        if peer, found := p2pHost.GetPeerByIP(localAddress); found {
-        	log.Infof("Found in p2pNATMap: LocalAddress=%s, Peer=%s\n", localAddress, peer)
-        	p2pAddress = peer
-        } else if replaced, ok := nat[localAddress]; ok {
-        	localAddress = replaced
-        }
+		if peer, found := p2pHost.GetPeerByIP(localAddress); found {
+			log.Infof("Found in p2pNATMap: LocalAddress=%s, Peer=%s\n", localAddress, peer)
+			p2pAddress = peer
+		} else if replaced, ok := nat[localAddress]; ok {
+			localAddress = replaced
+		}
 		natLock.Unlock()
 
-        if p2pAddress != "" {
-        	go func() {
-        	log.Infof("handle p2p nat: LocalAddress=%s, Peer=%s\n", localAddress, p2pAddress)
+		if p2pAddress != "" {
+			go func() {
+				log.Infof("handle p2p nat: LocalAddress=%s, Peer=%s\n", localAddress, p2pAddress)
 
-        	peerID, err := peer.Decode(p2pAddress)
-        	if err != nil {
-        		log.Warnf("Failed to parse Peer ID: %v", err)
-        	}
+				peerID, err := peer.Decode(p2pAddress)
+				if err != nil {
+					log.Warnf("Failed to parse Peer ID: %v", err)
+				}
 
-        	libp2pStream, err := p2pHost.Host.NewStream(ctx, peerID, LIBP2P_TAP_UDP)
-        	if err != nil {
-        		log.Warnf("creating stream to %s error: %v", p2pAddress, err)
-        		return
-        	}
-        	defer libp2pStream.Close()
+				libp2pStream, err := p2pHost.Host.NewStream(ctx, peerID, LIBP2P_TAP_UDP)
+				if err != nil {
+					log.Warnf("creating stream to %s error: %v", p2pAddress, err)
+					return
+				}
+				defer libp2pStream.Close()
 
-        	buf := make([]byte, 2) // Assuming 4 bytes (int32)
-        	// Encode the integer into the buffer
-        	binary.BigEndian.PutUint16(buf, uint16(r.ID().RemotePort))
+				buf := make([]byte, 2) // Assuming 4 bytes (int32)
+				// Encode the integer into the buffer
+				binary.BigEndian.PutUint16(buf, uint16(r.ID().RemotePort))
 
-        	// Write the buffer to the stream
+				// Write the buffer to the stream
 
-        	addr := r.ID().RemoteAddress.As4() // Now addr is addressable
-        	_, err2 := libp2pStream.Write(addr[:])
-        	if err2 != nil {
-        		log.Errorf("r.CreateEndpoint() = %v", err2)
-        	}
-        	_, err2 = libp2pStream.Write(buf)
-        	if err2 != nil {
-        		log.Errorf("r.CreateEndpoint() = %v", err2)
-        	}
+				addr := r.ID().RemoteAddress.As4() // Now addr is addressable
+				_, err2 := libp2pStream.Write(addr[:])
+				if err2 != nil {
+					log.Errorf("r.CreateEndpoint() = %v", err2)
+				}
+				_, err2 = libp2pStream.Write(buf)
+				if err2 != nil {
+					log.Errorf("r.CreateEndpoint() = %v", err2)
+				}
 
-        	buf = make([]byte, 2) // Assuming 4 bytes (int32)
-        	// Encode the integer into the buffer
-        	binary.BigEndian.PutUint16(buf, uint16(r.ID().LocalPort))
+				buf = make([]byte, 2) // Assuming 4 bytes (int32)
+				// Encode the integer into the buffer
+				binary.BigEndian.PutUint16(buf, uint16(r.ID().LocalPort))
 
-        	// Write the buffer to the stream
+				// Write the buffer to the stream
 
-        	addr = r.ID().LocalAddress.As4() // Now addr is addressable
-        	_, err2 = libp2pStream.Write(addr[:])
-        	if err2 != nil {
-        		log.Errorf("r.CreateEndpoint() = %v", err2)
-        	}
-        	_, err2 = libp2pStream.Write(buf)
-        	if err2 != nil {
-        		log.Errorf("r.CreateEndpoint() = %v", err2)
-        	}
+				addr = r.ID().LocalAddress.As4() // Now addr is addressable
+				_, err2 = libp2pStream.Write(addr[:])
+				if err2 != nil {
+					log.Errorf("r.CreateEndpoint() = %v", err2)
+				}
+				_, err2 = libp2pStream.Write(buf)
+				if err2 != nil {
+					log.Errorf("r.CreateEndpoint() = %v", err2)
+				}
 
-        	var wq waiter.Queue
-        	ep, tcpErr := r.CreateEndpoint(&wq)
-        	if tcpErr != nil {
-        		log.Errorf("r.CreateEndpoint() = %v", tcpErr)
-        		return
-        	}
+				var wq waiter.Queue
+				ep, tcpErr := r.CreateEndpoint(&wq)
+				if tcpErr != nil {
+					log.Errorf("r.CreateEndpoint() = %v", tcpErr)
+					return
+				}
 
-        	localAddr, _ := net.ResolveUDPAddr("udp",fmt.Sprintf("%s:%d",localAddress,r.ID().LocalPort))
-        	remoteAddr, _ := net.ResolveUDPAddr("udp",fmt.Sprintf("%s:%d",r.ID().RemoteAddress,r.ID().RemotePort))
-        	p, _ := NewUDPProxy(&autoStoppingListener{underlying: gonet.NewUDPConn( &wq, ep)}, func() (net.Conn, error) {
-        		//return net.Dial("udp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
-        		return NewStreamConn(localAddr, remoteAddr,libp2pStream), nil
-        	})
-        	p.Run()
-        	}()
-        } else {
-		var wq waiter.Queue
-		ep, tcpErr := r.CreateEndpoint(&wq)
-		if tcpErr != nil {
-			if _, ok := tcpErr.(*tcpip.ErrConnectionRefused); ok {
-				// transient error
-				log.Debugf("r.CreateEndpoint() = %v", tcpErr)
-			} else {
-				log.Errorf("r.CreateEndpoint() = %v", tcpErr)
+				localAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
+				remoteAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", r.ID().RemoteAddress, r.ID().RemotePort))
+				p, _ := NewUDPProxy(&autoStoppingListener{underlying: gonet.NewUDPConn(&wq, ep)}, func() (net.Conn, error) {
+					//return net.Dial("udp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
+					return NewStreamConn(localAddr, remoteAddr, libp2pStream), nil
+				})
+				p.Run()
+			}()
+		} else {
+			var wq waiter.Queue
+			ep, tcpErr := r.CreateEndpoint(&wq)
+			if tcpErr != nil {
+				if _, ok := tcpErr.(*tcpip.ErrConnectionRefused); ok {
+					// transient error
+					log.Debugf("r.CreateEndpoint() = %v", tcpErr)
+				} else {
+					log.Errorf("r.CreateEndpoint() = %v", tcpErr)
+				}
+				return
 			}
-			return
+
+			p, _ := NewUDPProxy(&autoStoppingListener{underlying: gonet.NewUDPConn(&wq, ep)}, func() (net.Conn, error) {
+				return net.Dial("udp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
+			})
+			go func() {
+				p.Run()
+
+				// note that at this point packets that are sent to the current forwarder session
+				// will be dropped. We will start processing the packets again when we get a new
+				// forwarder request.
+				ep.Close()
+			}()
 		}
-
-		p, _ := NewUDPProxy(&autoStoppingListener{underlying: gonet.NewUDPConn(&wq, ep)}, func() (net.Conn, error) {
-			return net.Dial("udp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
-		})
-		go func() {
-			p.Run()
-
-			// note that at this point packets that are sent to the current forwarder session
-			// will be dropped. We will start processing the packets again when we get a new
-			// forwarder request.
-			ep.Close()
-		}()
-        }
 	})
 }
