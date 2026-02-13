@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,66 +17,294 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
 	"github.com/containers/gvisor-tap-vsock/pkg/net/stdio"
-	"github.com/containers/gvisor-tap-vsock/pkg/notification"
 	"github.com/containers/gvisor-tap-vsock/pkg/sshclient"
 	"github.com/containers/gvisor-tap-vsock/pkg/transport"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 	"github.com/containers/winquit/pkg/winquit"
-	humanize "github.com/dustin/go-humanize"
+	"github.com/dustin/go-humanize"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
 var (
-	exitCode int
+	debug            bool
+	mtu              int
+	endpoints        arrayFlags
+	vpnkitSocket     string
+	qemuSocket       string
+	bessSocket       string
+	stdioSocket      string
+	vfkitSocket      string
+	forwardSocket    arrayFlags
+	forwardDest      arrayFlags
+	forwardUser      arrayFlags
+	forwardIdentify  arrayFlags
+	sshPort          int
+	pidFile          string
+	exitCode         int
+	logFile          string
+	servicesEndpoint string
+
+	ip        string
+	gatewayIP string
+	vmHostIP  string
+	subnet    string
+	vlan      string
+	password  string
+	key       string
+	relay     string
+	swarmKey  string
+	trust     string
 )
 
 func main() {
-	// Use config or fallback to original behavior
-	config, err := GvproxyInit()
-	if err != nil {
-		log.Fatal(err.Error())
+	version := types.NewVersion("gvproxy")
+	version.AddFlag()
+	flag.Var(&endpoints, "listen", "control endpoint")
+	flag.BoolVar(&debug, "debug", false, "Print debug info")
+	flag.IntVar(&mtu, "mtu", 1500, "Set the MTU")
+	flag.IntVar(&sshPort, "ssh-port", 2222, "Port to access the guest virtual machine. Must be between 1024 and 65535")
+	flag.StringVar(&vpnkitSocket, "listen-vpnkit", "", "VPNKit socket to be used by Hyperkit")
+	flag.StringVar(&qemuSocket, "listen-qemu", "", "Socket to be used by Qemu")
+	flag.StringVar(&bessSocket, "listen-bess", "", "unixpacket socket to be used by Bess-compatible applications")
+	flag.StringVar(&stdioSocket, "listen-stdio", "", "accept stdio pipe")
+	flag.StringVar(&vfkitSocket, "listen-vfkit", "", "unixgram socket to be used by vfkit-compatible applications")
+	flag.Var(&forwardSocket, "forward-sock", "Forwards a unix socket to the guest virtual machine over SSH")
+	flag.Var(&forwardDest, "forward-dest", "Forwards a unix socket to the guest virtual machine over SSH")
+	flag.Var(&forwardUser, "forward-user", "SSH user to use for unix socket forward")
+	flag.Var(&forwardIdentify, "forward-identity", "Path to SSH identity key for forwarding")
+	flag.StringVar(&pidFile, "pid-file", "", "Generate a file with the PID in it")
+	flag.StringVar(&logFile, "log-file", "", "Output log messages (logrus) to a given file path")
+	flag.StringVar(&servicesEndpoint, "services", "", "Exposes the same HTTP API as the --listen flag, without the /connect endpoint")
+	flag.Parse()
+
+	if version.ShowVersion() {
+		fmt.Println(version.String())
+		os.Exit(0)
 	}
 
-	// Report version
-	log.Info(GvproxyVersion())
-
-	ctx, cancel := context.WithCancel(context.Background())
-	// Make this the last defer statement in the stack
-	defer log.Exit(exitCode)
-
-	// Create a PID file if requested
-	if config.PIDFile != "" {
-		f, err := os.Create(config.PIDFile)
+	userHomeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Failed to get user home directory: %v", err)
+	}
+	if logFile == "" {
+		logFile = fmt.Sprintf("%s/gvproxy.log", userHomeDir)
+	}
+	// If the user provides a log-file, we re-direct log messages
+	// from logrus to the file
+	if logFile != "" {
+		lf, err := os.Create(logFile)
 		if err != nil {
-			log.Errorf("failed to create pidfile: %s", err.Error())
-			return
+			fmt.Printf("unable to open log file %s, exiting...\n", logFile)
+			os.Exit(1)
 		}
-		// Remove the pid-file when exiting
 		defer func() {
-			if err := os.Remove(config.PIDFile); err != nil {
-				log.Errorf("failed to remove pidfile: %s", err.Error())
+			if err := lf.Close(); err != nil {
+				fmt.Printf("unable to close log-file: %q\n", err)
 			}
 		}()
-		pid := os.Getpid()
-		if _, err := f.WriteString(strconv.Itoa(pid)); err != nil {
-			log.Errorf("failed to write pidfile: %s", err.Error())
-			return
-		}
+		log.SetOutput(lf)
+
+		// If debug is set, lets seed the log file with some basic information
+		// about the environment and how it was called
+		log.Debugf("gvproxy version: %q", version.String())
+		log.Debugf("os: %q arch: %q", runtime.GOOS, runtime.GOARCH)
+		log.Debugf("command line: %q", os.Args)
 	}
+
+	const keyFileName = "gvproxy.conf"
+	keyFilePath := fmt.Sprintf("%s/%s", userHomeDir, keyFileName)
+
+	config1, err := k3sphere.NewConfig(keyFilePath, version.String())
+	if err != nil {
+		log.Fatalf("Failed to load config file %v", err)
+	} else {
+		ip = config1.IP
+		subnet = config1.Subnet
+		gatewayIP = config1.GatewayIP
+		vmHostIP = config1.HostIP
+		vlan = config1.VLAN
+		key = config1.Key
+		relay = config1.Relay
+		trust = config1.Trust
+		password = config1.Password
+	}
+
+	if runtime.GOOS == "windows" {
+		// On Windows, we need to set the default MTU to 1400
+		config1.Interface = "podman-usermode"
+	} else {
+		config1.Interface = "enp0s1"
+	}
+
+	log.Info(version.String())
+	ctx, cancel := context.WithCancel(context.Background())
+	// Make this the last defer statement in the stack
+	defer os.Exit(exitCode)
+
+	// Create a new P2PHost
+	p2phost := k3sphere.NewP2P(key, relay, swarmKey, config1.Public)
+	log.Infof("Completed P2P Setup %s", relay)
 
 	groupErrs, ctx := errgroup.WithContext(ctx)
 	// Setup signal channel for catching user signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
+	if debug {
+		log.SetLevel(log.DebugLevel)
+	}
+
 	// Intercept WM_QUIT/WM_CLOSE events if on Windows as SIGTERM (noop on other OSs)
 	winquit.SimulateSigTermOnQuit(sigChan)
 
+	// Make sure the qemu socket provided is valid syntax
+	if len(qemuSocket) > 0 {
+		uri, err := url.Parse(qemuSocket)
+		if err != nil || uri == nil {
+			exitWithError(errors.Wrapf(err, "invalid value for listen-qemu"))
+		}
+		if _, err := os.Stat(uri.Path); err == nil && uri.Scheme == "unix" {
+			exitWithError(errors.Errorf("%q already exists", uri.Path))
+		}
+	}
+	if len(bessSocket) > 0 {
+		uri, err := url.Parse(bessSocket)
+		if err != nil || uri == nil {
+			exitWithError(errors.Wrapf(err, "invalid value for listen-bess"))
+		}
+		if uri.Scheme != "unixpacket" {
+			exitWithError(errors.New("listen-bess must be unixpacket:// address"))
+		}
+		if _, err := os.Stat(uri.Path); err == nil {
+			exitWithError(errors.Errorf("%q already exists", uri.Path))
+		}
+	}
+	if len(vfkitSocket) > 0 {
+		uri, err := url.Parse(vfkitSocket)
+		if err != nil || uri == nil {
+			exitWithError(errors.Wrapf(err, "invalid value for listen-vfkit"))
+		}
+		if uri.Scheme != "unixgram" {
+			exitWithError(errors.New("listen-vfkit must be unixgram:// address"))
+		}
+		if _, err := os.Stat(uri.Path); err == nil {
+			exitWithError(errors.Errorf("%q already exists", uri.Path))
+		}
+	}
+
+	if vpnkitSocket != "" && qemuSocket != "" {
+		exitWithError(errors.New("cannot use qemu and vpnkit protocol at the same time"))
+	}
+	if vpnkitSocket != "" && bessSocket != "" {
+		exitWithError(errors.New("cannot use bess and vpnkit protocol at the same time"))
+	}
+	if qemuSocket != "" && bessSocket != "" {
+		exitWithError(errors.New("cannot use qemu and bess protocol at the same time"))
+	}
+
+	// If the given port is not between the privileged ports
+	// and the oft considered maximum port, return an error.
+	if sshPort != -1 && sshPort < 1024 || sshPort > 65535 {
+		exitWithError(errors.New("ssh-port value must be between 1024 and 65535"))
+	}
+	protocol := types.HyperKitProtocol
+	if qemuSocket != "" {
+		protocol = types.QemuProtocol
+	}
+	if bessSocket != "" {
+		protocol = types.BessProtocol
+	}
+	if vfkitSocket != "" {
+		protocol = types.VfkitProtocol
+	}
+
+	if c := len(forwardSocket); c != len(forwardDest) || c != len(forwardUser) || c != len(forwardIdentify) {
+		exitWithError(errors.New("--forward-sock, --forward-dest, --forward-user, and --forward-identity must all be specified together, " +
+			"the same number of times, or not at all"))
+	}
+
+	for i := 0; i < len(forwardSocket); i++ {
+		_, err := os.Stat(forwardIdentify[i])
+		if err != nil {
+			exitWithError(errors.Wrapf(err, "Identity file %s can't be loaded", forwardIdentify[i]))
+		}
+	}
+
+	// Create a PID file if requested
+	if len(pidFile) > 0 {
+		f, err := os.Create(pidFile)
+		if err != nil {
+			exitWithError(err)
+		}
+		// Remove the pid-file when exiting
+		defer func() {
+			if err := os.Remove(pidFile); err != nil {
+				log.Error(err)
+			}
+		}()
+		pid := os.Getpid()
+		if _, err := f.WriteString(strconv.Itoa(pid)); err != nil {
+			exitWithError(err)
+		}
+	}
+
+	config := types.Configuration{
+		Debug:             debug,
+		CaptureFile:       captureFile(),
+		MTU:               mtu,
+		Subnet:            subnet,
+		GatewayIP:         gatewayIP,
+		GatewayMacAddress: "5a:94:ef:e4:0c:dd",
+		DHCPStaticLeases: map[string]string{
+			ip: "5a:94:ef:e4:0c:ee",
+		},
+		DNS: []types.Zone{
+			{
+				Name: "containers.internal.",
+				Records: []types.Record{
+					{
+						Name: gateway,
+						IP:   net.ParseIP(gatewayIP),
+					},
+					{
+						Name: "host",
+						IP:   net.ParseIP(vmHostIP),
+					},
+				},
+			},
+			{
+				Name: "docker.internal.",
+				Records: []types.Record{
+					{
+						Name: gateway,
+						IP:   net.ParseIP(gatewayIP),
+					},
+					{
+						Name: "host",
+						IP:   net.ParseIP(vmHostIP),
+					},
+				},
+			},
+		},
+		DNSSearchDomains: searchDomains(),
+		Forwards:         getForwardsMap(sshPort, fmt.Sprintf("%s:22", ip)),
+		NAT: map[string]string{
+			vmHostIP: "127.0.0.1",
+		},
+		GatewayVirtualIPs: []string{vmHostIP},
+		VpnKitUUIDMacAddresses: map[string]string{
+			"c3d68012-0208-11ea-9fd7-f2189899ab08": "5a:94:ef:e4:0c:ee",
+		},
+		Protocol: protocol,
+	}
+
 	groupErrs.Go(func() error {
-		return run(ctx, groupErrs, config)
+		return run(ctx, groupErrs, &config, endpoints, servicesEndpoint, p2phost, config1)
 	})
 
 	// Wait for something to happen
@@ -90,6 +318,11 @@ func main() {
 			return nil
 		}
 	})
+
+	groupErrs.Go(func() error {
+		return k3sphere.ConnectLibp2p(ctx, p2phost, *config1, password, "podman")
+	})
+
 	// Wait for all of the go funcs to finish up
 	if err := groupErrs.Wait(); err != nil {
 		log.Errorf("gvproxy exiting: %v", err)
@@ -117,63 +350,60 @@ func (i *arrayFlags) Set(value string) error {
 	return nil
 }
 
-func InDebugMode() bool {
-	return log.GetLevel().String() == "debug"
+func captureFile() string {
+	if !debug {
+		return ""
+	}
+	return "capture.pcap"
 }
 
-func run(ctx context.Context, g *errgroup.Group, config *GvproxyConfig) error {
-	vn, err := virtualnetwork.New(&config.Stack)
+func InDebugMode() bool {
+	return log.GetLevel() == log.DebugLevel
+}
+
+func run(ctx context.Context, g *errgroup.Group, configuration *types.Configuration, endpoints []string, servicesEndpoint string, p2phost *k3sphere.P2P, config1 *k3sphere.Config) error {
+	vn, err := virtualnetwork.New(ctx, configuration, p2phost, config1)
 	if err != nil {
 		return err
 	}
 	log.Info("waiting for clients...")
 
-	// Initializing notificationSender here because NewNotificationSender always returns a valid object (a no-op sender when socket is empty),
-	// removing the need for nil checks at every Send() call.
-	notificationSender := notification.NewNotificationSender(config.NotificationSocket)
-	if config.NotificationSocket != "" {
-		g.Go(func() error {
-			notificationSender.Start(ctx)
-			return nil
-		})
-	}
-	vn.SetNotificationSender(notificationSender)
-	for _, endpoint := range config.Listen {
+	for _, endpoint := range endpoints {
 		log.Infof("listening %s", endpoint)
 		ln, err := transport.Listen(endpoint)
 		if err != nil {
-			return fmt.Errorf("cannot listen: %w", err)
+			return errors.Wrap(err, "cannot listen")
 		}
 		httpServe(ctx, g, ln, withProfiler(vn))
 	}
-	notificationSender.Send(types.NotificationMessage{NotificationType: types.Ready})
 
-	if config.Services != "" {
-		log.Infof("enabling services API. Listening %s", config.Services)
-		ln, err := transport.Listen(config.Services)
+	if servicesEndpoint != "" {
+		log.Infof("enabling services API. Listening %s", servicesEndpoint)
+		ln, err := transport.Listen(servicesEndpoint)
 		if err != nil {
-			return fmt.Errorf("cannot listen: %w", err)
+			return errors.Wrap(err, "cannot listen")
 		}
 		httpServe(ctx, g, ln, vn.ServicesMux())
 	}
 
-	ln, err := vn.Listen("tcp", fmt.Sprintf("%s:80", config.Stack.GatewayIP))
+	ln, err := vn.Listen("tcp", fmt.Sprintf("%s:80", gatewayIP))
 	if err != nil {
 		return err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/services/forwarder/all", vn.Mux())
+	mux.Handle("/services/route", vn.Mux())
 	mux.Handle("/services/forwarder/expose", vn.Mux())
 	mux.Handle("/services/forwarder/unexpose", vn.Mux())
 	httpServe(ctx, g, ln, mux)
 
-	if InDebugMode() {
+	if debug {
 		g.Go(func() error {
 		debugLog:
 			for {
 				select {
 				case <-time.After(5 * time.Second):
-					log.Debugf("%s sent to the VM, %s received from the VM\n", humanize.Bytes(vn.BytesSent()), humanize.Bytes(vn.BytesReceived()))
+					log.Debugf("%v sent to the VM, %v received from the VM\n", humanize.Bytes(vn.BytesSent()), humanize.Bytes(vn.BytesReceived()))
 				case <-ctx.Done():
 					break debugLog
 				}
@@ -182,11 +412,10 @@ func run(ctx context.Context, g *errgroup.Group, config *GvproxyConfig) error {
 		})
 	}
 
-	if config.Interfaces.VPNKit != "" {
-		vpnkitListener, err := transport.Listen(config.Interfaces.VPNKit)
+	if vpnkitSocket != "" {
+		vpnkitListener, err := transport.Listen(vpnkitSocket)
 		if err != nil {
-			notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-			return fmt.Errorf("vpnkit listen error: %w", err)
+			return errors.Wrap(err, "vpnkit listen error")
 		}
 		g.Go(func() error {
 		vpnloop:
@@ -199,7 +428,6 @@ func run(ctx context.Context, g *errgroup.Group, config *GvproxyConfig) error {
 				}
 				conn, err := vpnkitListener.Accept()
 				if err != nil {
-					notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
 					log.Errorf("vpnkit accept error: %s", err)
 					continue
 				}
@@ -211,121 +439,111 @@ func run(ctx context.Context, g *errgroup.Group, config *GvproxyConfig) error {
 		})
 	}
 
-	if config.Interfaces.Qemu != "" {
-		qemuListener, err := transport.Listen(config.Interfaces.Qemu)
+	if qemuSocket != "" {
+		qemuListener, err := transport.Listen(qemuSocket)
 		if err != nil {
-			notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-			return fmt.Errorf("qemu listen error: %w", err)
+			return errors.Wrap(err, "qemu listen error")
 		}
 
 		g.Go(func() error {
 			<-ctx.Done()
 			if err := qemuListener.Close(); err != nil {
-				log.Errorf("error closing %s: %q", config.Interfaces.Qemu, err)
+				log.Errorf("error closing %s: %q", qemuSocket, err)
 			}
-			return os.Remove(config.Interfaces.Qemu)
+			return os.Remove(qemuSocket)
 		})
 
 		g.Go(func() error {
 			conn, err := qemuListener.Accept()
 			if err != nil {
-				notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-				return fmt.Errorf("qemu accept error: %w", err)
+				return errors.Wrap(err, "qemu accept error")
 			}
 			return vn.AcceptQemu(ctx, conn)
 		})
 	}
 
-	if config.Interfaces.Bess != "" {
-		bessListener, err := transport.Listen(config.Interfaces.Bess)
+	if bessSocket != "" {
+		bessListener, err := transport.Listen(bessSocket)
 		if err != nil {
-			notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-			return fmt.Errorf("bess listen error: %w", err)
+			return errors.Wrap(err, "bess listen error")
 		}
 
 		g.Go(func() error {
 			<-ctx.Done()
 			if err := bessListener.Close(); err != nil {
-				log.Errorf("error closing %s: %q", config.Interfaces.Bess, err)
+				log.Errorf("error closing %s: %q", bessSocket, err)
 			}
-			return os.Remove(config.Interfaces.Bess)
+			return os.Remove(bessSocket)
 		})
 
 		g.Go(func() error {
 			conn, err := bessListener.Accept()
 			if err != nil {
-				notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-				return fmt.Errorf("bess accept error: %w", err)
+				return errors.Wrap(err, "bess accept error")
+
 			}
 			return vn.AcceptBess(ctx, conn)
 		})
 	}
 
-	if config.Interfaces.Vfkit != "" {
-		conn, err := transport.ListenUnixgram(config.Interfaces.Vfkit)
+	if vfkitSocket != "" {
+		conn, err := transport.ListenUnixgram(vfkitSocket)
 		if err != nil {
-			notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-			return fmt.Errorf("vfkit listen error: %w", err)
+			return errors.Wrap(err, "vfkit listen error")
 		}
 
 		g.Go(func() error {
 			<-ctx.Done()
 			if err := conn.Close(); err != nil {
-				log.Errorf("error closing %s: %q", config.Interfaces.Vfkit, err)
+				log.Errorf("error closing %s: %q", vfkitSocket, err)
 			}
-			vfkitSocketURI, _ := url.Parse(config.Interfaces.Vfkit)
+			vfkitSocketURI, _ := url.Parse(vfkitSocket)
 			return os.Remove(vfkitSocketURI.Path)
 		})
 
 		g.Go(func() error {
 			vfkitConn, err := transport.AcceptVfkit(conn)
 			if err != nil {
-				notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-				return fmt.Errorf("vfkit accept error: %w", err)
+				return errors.Wrap(err, "vfkit accept error")
 			}
-
 			return vn.AcceptVfkit(ctx, vfkitConn)
 		})
 	}
 
-	if config.Interfaces.Stdio != "" {
+	if stdioSocket != "" {
 		g.Go(func() error {
 			conn := stdio.GetStdioConn()
-			if err := vn.AcceptStdio(ctx, conn); err != nil {
-				notificationSender.Send(types.NotificationMessage{NotificationType: types.HypervisorError})
-				return err
-			}
-			return nil
+			return vn.AcceptStdio(ctx, conn)
 		})
 	}
 
-	for i := range config.Forwards {
+	for i := 0; i < len(forwardSocket); i++ {
 		var (
 			src *url.URL
 			err error
 		)
-		if strings.Contains(config.Forwards[i].Socket, "://") {
-			src, err = url.Parse(config.Forwards[i].Socket)
+		if strings.Contains(forwardSocket[i], "://") {
+			src, err = url.Parse(forwardSocket[i])
 			if err != nil {
 				return err
 			}
 		} else {
 			src = &url.URL{
 				Scheme: "unix",
-				Path:   config.Forwards[i].Socket,
+				Path:   forwardSocket[i],
 			}
 		}
 
 		dest := &url.URL{
 			Scheme: "ssh",
-			User:   url.User(config.Forwards[i].User),
-			Host:   sshHostPort,
-			Path:   config.Forwards[i].Dest,
+			User:   url.User(forwardUser[i]),
+			Host:   fmt.Sprintf("%s:22", ip),
+			Path:   forwardDest[i],
 		}
 		j := i
 		g.Go(func() error {
-			defer os.Remove(config.Forwards[j].Socket)
-			forward, err := sshclient.CreateSSHForward(ctx, src, dest, config.Forwards[j].Identity, vn)
+			defer os.Remove(forwardSocket[j])
+			forward, err := sshclient.CreateSSHForward(ctx, src, dest, forwardIdentify[j], vn)
 			if err != nil {
 				return err
 			}
@@ -378,13 +596,18 @@ func httpServe(ctx context.Context, g *errgroup.Group, ln net.Listener, mux http
 
 func withProfiler(vn *virtualnetwork.VirtualNetwork) http.Handler {
 	mux := vn.Mux()
-	if InDebugMode() {
+	if debug {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	}
 	return mux
+}
+
+func exitWithError(err error) {
+	log.Error(err)
+	os.Exit(1)
 }
 
 func searchDomains() []string {

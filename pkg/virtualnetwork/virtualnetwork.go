@@ -1,6 +1,7 @@
 package virtualnetwork
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/containers/gvisor-tap-vsock/pkg/k3sphere"
 	"github.com/containers/gvisor-tap-vsock/pkg/notification"
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -33,7 +35,7 @@ func (n *VirtualNetwork) SetNotificationSender(notificationSender *notification.
 	n.networkSwitch.SetNotificationSender(notificationSender)
 }
 
-func New(configuration *types.Configuration) (*VirtualNetwork, error) {
+func New(ctx context.Context, configuration *types.Configuration, p2pHost *k3sphere.P2P, config1 *k3sphere.Config) (*VirtualNetwork, error) {
 	_, subnet, err := net.ParseCIDR(configuration.Subnet)
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse subnet cidr: %w", err)
@@ -51,7 +53,7 @@ func New(configuration *types.Configuration) (*VirtualNetwork, error) {
 	if mtu < 0 || mtu > math.MaxInt32 {
 		return nil, errors.New("mtu is out of range")
 	}
-	tapEndpoint, err := tap.NewLinkEndpoint(configuration.Debug, uint32(mtu), configuration.GatewayMacAddress, configuration.GatewayIP, configuration.GatewayVirtualIPs)
+	tapEndpoint, err := tap.NewLinkEndpoint(configuration.Debug, uint32(mtu), configuration.GatewayMacAddress, configuration.GatewayIP, configuration.GatewayVirtualIPs, p2pHost)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create tap endpoint: %w", err)
 	}
@@ -78,7 +80,7 @@ func New(configuration *types.Configuration) (*VirtualNetwork, error) {
 		return nil, fmt.Errorf("cannot create network stack: %w", err)
 	}
 
-	mux, err := addServices(configuration, stack, ipPool)
+	mux, err := addServices(ctx, configuration, stack, ipPool, p2pHost, config1)
 	if err != nil {
 		return nil, fmt.Errorf("cannot add network services: %w", err)
 	}
