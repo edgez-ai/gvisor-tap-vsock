@@ -20,11 +20,12 @@ type Config struct {
 }
 
 type JoinInfo struct {
-	Id       string `json:"id"`
-	Platform string `json:"platform"`
-	Arch     string `json:"arch"`
-	Version  string `json:"version"`
-	Name     string `json:"name"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
+	Id           string `json:"id"`
+	SerialNumber string `json:"serial_number"`
+	Platform     string `json:"platform"`
+	Arch         string `json:"arch"`
+	Version      string `json:"version"`
+	Name         string `json:"name"`
+	Port         int    `json:"port"`
+	Username     string `json:"username"`
 }

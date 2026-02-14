@@ -34,6 +34,10 @@ func NewConfig(keyFilePath string, version string) (*Config, error) {
 	} else if os.Getenv("JOIN_KEY") != "" {
 		// when config file does not exist, use join key to fetch config from cloud
 		joinKey := os.Getenv("JOIN_KEY")
+		serialNumber := strings.TrimSpace(os.Getenv("SERIAL_NUMBER"))
+		if serialNumber == "" {
+			log.Fatalf("SERIAL_NUMBER is required when JOIN_KEY is set")
+		}
 
 		// If not, generate a new one
 		privKey, pubKey, err := crypto.GenerateKeyPair(crypto.Ed25519, 0)
@@ -66,19 +70,20 @@ func NewConfig(keyFilePath string, version string) (*Config, error) {
 			// need to read ssh port for config file
 		}
 		joinInfo := JoinInfo{
-			Id:       peerID.String(),
-			Platform: runtime.GOOS,
-			Arch:     runtime.GOARCH,
-			Version:  version,
-			Name:     func() string { h, _ := os.Hostname(); return h }(),
-			Port:     port,
-			Username: username,
+			Id:           peerID.String(),
+			SerialNumber: serialNumber,
+			Platform:     runtime.GOOS,
+			Arch:         runtime.GOARCH,
+			Version:      version,
+			Name:         func() string { h, _ := os.Hostname(); return h }(),
+			Port:         port,
+			Username:     username,
 		}
 		body, err := json.Marshal(joinInfo)
 		if err != nil {
 			log.Fatalf("Failed to marshal join info: %v", err)
 		}
-		req, err := http.NewRequest("POST", "https://edgez.com/api/join", strings.NewReader(string(body)))
+		req, err := http.NewRequest("POST", "https://edgez.ai/api/join", strings.NewReader(string(body)))
 		if err != nil {
 			log.Fatalf("Failed to create request: %v", err)
 		}
