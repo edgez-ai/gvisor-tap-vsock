@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -15,7 +16,6 @@ import (
 	log "github.com/sirupsen/logrus"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -26,67 +26,30 @@ const LIBP2P_TAP_TCP = "/gvisor/libp2p-tap-tcp/1.0.0"
 
 func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, p2pHost *edgez.P2P) *tcp.Forwarder {
 	p2pHost.Host.SetStreamHandler(LIBP2P_TAP_TCP, func(stream network.Stream) {
-		buf := make([]byte, 4)
+		buf := make([]byte, 2)
 
-		// Read 4 bytes from the stream
-		_, err := stream.Read(buf)
+		// Read 2-byte target port from stream header.
+		_, err := io.ReadFull(stream, buf)
 		if err != nil {
-			log.Printf("Error reading from stream: %v", err)
+			log.Printf("Error reading stream header: %v", err)
 			return
 		}
-		localAddr := tcpip.AddrFromSlice(buf)
+		targetPort := binary.BigEndian.Uint16(buf)
 
 		routeTable := s.GetRouteTable()
 		for _, route := range routeTable {
 			log.Infof("Route: Destination=%s, Gateway=%s, NIC=%d", route.Destination, route.Gateway, route.NIC)
 		}
 
-		buf = make([]byte, 2)
-		// Read 2 bytes from the stream
-		_, err = stream.Read(buf)
-		if err != nil {
-			log.Infof("Error reading from stream: %v", err)
-			return
-		}
-		// Decode the integer using BigEndian
-		localPort := binary.BigEndian.Uint16(buf)
-
-		buf = make([]byte, 4)
-
-		// Read 4 bytes from the stream
-		_, err = stream.Read(buf)
-		if err != nil {
-			log.Printf("Error reading from stream: %v", err)
-			return
-		}
-		remoteAddr := tcpip.AddrFromSlice(buf)
-
-		buf = make([]byte, 2)
-
-		// Read 4 bytes from the stream
-		_, err = stream.Read(buf)
-		if err != nil {
-			log.Infof("Error reading from stream: %v", err)
-			return
-		}
-
-		// Decode the integer using BigEndian
-		remotePort := binary.BigEndian.Uint16(buf)
-
-		log.Printf("Received number: %s %d", localAddr, localPort)
+		log.Printf("Received target port: %d", targetPort)
 		address := tcpip.FullAddress{
-			Addr: localAddr,
-			Port: localPort,
+			Addr: tcpip.AddrFromSlice(net.ParseIP("127.0.0.1").To4()),
+			Port: targetPort,
 		}
 
-		var conn net.Conn
-		if address.Addr.String() == "127.0.0.1" {
-			conn, err = net.DialTimeout("tcp", fmt.Sprintf("%s:%d", address.Addr, address.Port), 10*time.Second)
-		} else {
-			conn, err = gonet.DialContextTCP(ctx, s, address, ipv4.ProtocolNumber)
-		}
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", address.Port), 10*time.Second)
 		if err != nil {
-			log.Printf("Error connecting to address %s:%d: %v", address.Addr, address.Port, err)
+			log.Printf("Error connecting to tap port %d: %v", address.Port, err)
 			return
 		}
 
@@ -96,8 +59,8 @@ func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 			},
 		}
 
-		localAddr1, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", "localhost", 8080))
-		remoteAddr1, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", remoteAddr, remotePort))
+		localAddr1, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", targetPort))
+		remoteAddr1, _ := net.ResolveTCPAddr("tcp", "0.0.0.0:0")
 		incoming := NewStreamConn(localAddr1, remoteAddr1, stream)
 		if err != nil {
 			log.Tracef("net.Dial() = %v", err)
@@ -137,36 +100,13 @@ func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 			}
 			defer libp2pStream.Close()
 
-			// Write the buffer to the stream
-
-			addr := r.ID().LocalAddress.As4() // Now addr is addressable
-			_, err2 := libp2pStream.Write(addr[:])
-			if err2 != nil {
-				log.Errorf("failed to write address local address %v", err2)
-			}
-
-			buf := make([]byte, 2) // Assuming 4 bytes (int32)
-			// Encode the integer into the buffer
+			// Write only 2-byte target port header.
+			buf := make([]byte, 2)
 			binary.BigEndian.PutUint16(buf, uint16(r.ID().LocalPort))
-			_, err2 = libp2pStream.Write(buf)
+			_, err2 := libp2pStream.Write(buf)
 			if err2 != nil {
-				log.Errorf("failed to write address local port %v", err2)
-			}
-
-			// Write the buffer to the stream
-
-			addr = r.ID().RemoteAddress.As4() // Now addr is addressable
-			_, err2 = libp2pStream.Write(addr[:])
-			if err2 != nil {
-				log.Errorf("failed to write address remote address %v", err2)
-			}
-
-			buf = make([]byte, 2) // Assuming 4 bytes (int32)
-			// Encode the integer into the buffer
-			binary.BigEndian.PutUint16(buf, uint16(r.ID().RemotePort))
-			_, err2 = libp2pStream.Write(buf)
-			if err2 != nil {
-				log.Errorf("failed to write address remote port %v", err2)
+				log.Errorf("failed to write target port %v", err2)
+				return
 			}
 
 			localAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", localAddress, r.ID().LocalPort))
