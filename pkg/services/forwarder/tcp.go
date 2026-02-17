@@ -16,6 +16,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/waiter"
@@ -24,7 +25,13 @@ import (
 const linkLocalSubnet = "169.254.0.0/16"
 const LIBP2P_TAP_TCP = "/gvisor/libp2p-tap-tcp/1.0.0"
 
-func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, p2pHost *edgez.P2P) *tcp.Forwarder {
+func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, p2pHost *edgez.P2P, tapIP string) *tcp.Forwarder {
+	tapIPv4 := net.ParseIP(tapIP).To4()
+	if tapIPv4 == nil {
+		log.Warnf("Invalid tap IPv4 address %q, falling back to 127.0.0.1", tapIP)
+		tapIPv4 = net.ParseIP("127.0.0.1").To4()
+	}
+
 	p2pHost.Host.SetStreamHandler(LIBP2P_TAP_TCP, func(stream network.Stream) {
 		buf := make([]byte, 2)
 
@@ -43,11 +50,13 @@ func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 
 		log.Printf("Received target port: %d", targetPort)
 		address := tcpip.FullAddress{
-			Addr: tcpip.AddrFromSlice(net.ParseIP("127.0.0.1").To4()),
+			Addr: tcpip.AddrFrom4Slice(tapIPv4),
 			Port: targetPort,
 		}
 
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", address.Port), 10*time.Second)
+		dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		conn, err := gonet.DialContextTCP(dialCtx, s, address, ipv4.ProtocolNumber)
 		if err != nil {
 			log.Printf("Error connecting to tap port %d: %v", address.Port, err)
 			return
@@ -59,7 +68,7 @@ func TCP(ctx context.Context, s *stack.Stack, nat map[tcpip.Address]tcpip.Addres
 			},
 		}
 
-		localAddr1, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.1:%d", targetPort))
+		localAddr1, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", tapIPv4.String(), targetPort))
 		remoteAddr1, _ := net.ResolveTCPAddr("tcp", "0.0.0.0:0")
 		incoming := NewStreamConn(localAddr1, remoteAddr1, stream)
 		if err != nil {

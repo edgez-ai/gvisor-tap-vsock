@@ -29,7 +29,7 @@ func addServices(ctx context.Context, configuration *types.Configuration, s *sta
 	var natLock sync.Mutex
 	translation := parseNATTable(configuration)
 
-	tcpForwarder := forwarder.TCP(ctx, s, translation, &natLock, p2pHost)
+	tcpForwarder := forwarder.TCP(ctx, s, translation, &natLock, p2pHost, config1.IP)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	udpForwarder := forwarder.UDP(ctx, s, translation, &natLock, p2pHost)
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
