@@ -21,6 +21,7 @@ type Config struct {
 
 type JoinInfo struct {
 	Id           string `json:"id"`
+	JoinKey      string `json:"join_key,omitempty"`
 	SerialNumber string `json:"serial_number"`
 	Platform     string `json:"platform"`
 	Arch         string `json:"arch"`

@@ -71,6 +71,7 @@ func NewConfig(keyFilePath string, version string) (*Config, error) {
 		}
 		joinInfo := JoinInfo{
 			Id:           peerID.String(),
+			JoinKey:      joinKey,
 			SerialNumber: serialNumber,
 			Platform:     runtime.GOOS,
 			Arch:         runtime.GOARCH,
